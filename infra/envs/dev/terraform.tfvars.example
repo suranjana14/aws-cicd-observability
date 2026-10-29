@@ -1,0 +1,9 @@
+region       = "us-east-1"
+alarm_emails = ["oncall@example.com"]
+
+# Set to false if another stack already created the GitHub OIDC provider in this account.
+create_github_oidc_provider = true
+
+# Optional: monitor an existing ECS service (enables CPU/memory alarms + dashboard widgets).
+# ecs_cluster_name = "apps-dev"
+# ecs_service_name = "orders-api"

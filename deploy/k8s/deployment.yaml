@@ -1,0 +1,58 @@
+# Rolling-update path for teams running on EKS (see the companion repo
+# aws-eks-platform-terraform). maxUnavailable: 0 + readiness probe means a
+# bad image never takes capacity away; `kubectl rollout undo` is the rollback.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  labels: { app: orders-api }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: { app: orders-api }
+  template:
+    metadata:
+      labels: { app: orders-api }
+    spec:
+      serviceAccountName: orders-api   # IRSA / Pod Identity role, no node-role permissions
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: IMAGE_URI   # replaced by CI with <ecr-repo>:<git-sha>
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: SERVICE_VERSION, value: GIT_SHA }
+            - { name: DEPLOY_COLOR, value: rolling }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orders-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: orders-api }

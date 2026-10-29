@@ -1,0 +1,18 @@
+# CodeDeploy AppSpec for an ECS blue/green deployment.
+# The deployment group is configured with:
+#   - deployment config CodeDeployDefault.ECSCanary10Percent5Minutes
+#   - alarm-based auto rollback on the composite alarm "<service>-<env>-service-unhealthy"
+#   - automatic rollback on DEPLOYMENT_FAILURE and DEPLOYMENT_STOP_ON_ALARM
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: "<TASK_DEFINITION>"
+        LoadBalancerInfo:
+          ContainerName: "app"
+          ContainerPort: 8080
+Hooks:
+  # A Lambda that curls the green target group via the test listener (port 8443)
+  # and checks /readyz reports the new version before any production traffic shifts.
+  - AfterAllowTestTraffic: "orders-api-dev-verify-green"

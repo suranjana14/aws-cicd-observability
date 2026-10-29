@@ -1,0 +1,80 @@
+# Intended GitHub Actions workflow. Copy to .github/workflows/ci-cd.yml to enable.
+# Every step calls the same ci/*.sh scripts you can run locally.
+name: ci-cd
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # OIDC to AWS, no stored access keys
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: app/requirements-dev.txt }
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - run: pip install -r app/requirements-dev.txt
+      - run: ./ci/lint.sh
+      - run: ./ci/test.sh
+      - run: ./ci/terraform-validate.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: junit, path: reports/junit.xml }
+
+  image:
+    needs: build-test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - id: meta
+        run: echo "image=${{ steps.ecr.outputs.registry }}/orders-api:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - run: IMAGE_REPO=${{ steps.ecr.outputs.registry }}/orders-api PUSH=1 ./ci/docker-build.sh
+
+  deploy-dev:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: dev   # GitHub environment protection rules = manual approval for prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: deploy/ecs/taskdef.rendered.json
+          container-name: app
+          image: ${{ needs.image.outputs.image }}
+      # Blue/green through CodeDeploy; rollback is automatic if the
+      # composite "service-unhealthy" alarm fires during the canary window.
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          service: orders-api
+          cluster: apps-dev
+          codedeploy-appspec: deploy/ecs/appspec.yaml
+          codedeploy-application: orders-api-dev
+          codedeploy-deployment-group: orders-api-dev
+          wait-for-service-stability: true
